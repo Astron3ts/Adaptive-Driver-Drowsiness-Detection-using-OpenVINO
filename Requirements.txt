@@ -1,0 +1,5 @@
+OpenVino
+opencv-python
+numpy 
+scipy
+transformers
