@@ -1,36 +1,50 @@
-```
-OpenVINO Adaptive Driver Drowsiness Detection System
-```
+# OpenVINO Driver Drowsiness Detection System
 
-```
-Real-time driver fatigue monitoring pipeline featuring a 60-second dynamic
-onboarding calibration phase ($\mu - 1.5\sigma$) to eliminate demographic false
-alarms.
-```
+Real-time driver fatigue monitoring system featuring **Dual-Stream Eye Verification (EAR + Custom OcuNet CNN)**, **Mouth Aspect Ratio (MAR)**, and **3D Head Pose Estimation** with an onboarding statistical calibration model.
 
-```
-Features
-```
+---
 
-```
--Phase 1 Baseline Calibration: Computes driver-specific mean (μ) and standard
-deviation (σ) during the first 60 seconds.
-```
+## Features
 
-```
--Phase 2 Active Monitoring:Temporal moving average filter with a 5-consecutive-
-frame threshold.
-```
+- **Dual-Stream Eye Verification**:
+  - **Geometric EAR**: 6-point Euclidean eye aspect ratio with dynamic thresholding.
+  - **OcuNet Neural Classifier**: Custom-trained lightweight CNN (~72 KB) running on OpenVINO at 0.12ms latency.
+- **Yawn Detection**: Real-time Mouth Aspect Ratio (MAR) tracking prolonged mouth opening.
+- **Head Nodding Detection**: Perspective-n-Point (`cv2.solvePnP`) 3D head pose estimation (Pitch < -18°).
+- **Phase 1 Baseline Calibration (60s)**: Personalizes driver EAR thresholds with 10th-percentile blink outlier filtering.
+- **Hardware Acceleration**: Dynamic target re-compilation (`CPU`, `GPU`, `AUTO`) via Intel OpenVINO.
 
-```
--Hardware Acceleration:Optimized for CPU inference via Intel OpenVINO.
-```
+---
 
-```
-Installation:
-```
+## Installation
 
-```
+```bash
+git clone <repository-url>
+cd project
 pip install -r requirements.txt
 ```
 
+---
+
+## Usage
+
+### 1. Run Real-Time Detection
+```bash
+python drowsiness_detector.py
+```
+
+#### Controls:
+- **`q`** / **`Esc`**: Quit application cleanly.
+- **`1`**: Switch OpenVINO inference target to **CPU**.
+- **`2`**: Switch OpenVINO inference target to **GPU**.
+- **`3`**: Switch OpenVINO inference target to **AUTO**.
+
+### 2. Train Custom OcuNet on CUDA
+To retrain the custom eye-state classifier on GPU:
+```bash
+python train_model.py
+```
+This automatically:
+1. Trains OcuNet using CUDA on your GPU.
+2. Converts the model into native OpenVINO Intermediate Representation (`ocunet.xml` + `ocunet.bin`).
+3. Runs performance benchmarks across detected OpenVINO devices.

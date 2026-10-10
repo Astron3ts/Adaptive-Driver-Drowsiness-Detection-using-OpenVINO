@@ -1,0 +1,6 @@
+openvino
+opencv-python
+numpy
+mediapipe
+torch
+torchvision

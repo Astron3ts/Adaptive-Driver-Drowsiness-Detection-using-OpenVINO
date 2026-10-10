@@ -1,0 +1,22 @@
+# Byte-compiled
+__pycache__/
+*.py[cod]
+
+# Checkpoints and dataset
+.ipynb_checkpoints/
+dataset/
+*.npy
+
+# Legacy and backup files
+*backup*.py
+plot_benchmarks.py
+paper_draft_ieee.md
+haarcascade_*.xml
+*.task
+*.pt
+*.docx
+*.png
+*.csv
+*.errors.txt
+.vscode/
+pyrightconfig.json
