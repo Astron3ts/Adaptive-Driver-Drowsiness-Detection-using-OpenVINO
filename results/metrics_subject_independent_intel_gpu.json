@@ -1,0 +1,44 @@
+{
+  "model": "ocunet_subject_independent.xml",
+  "split": "subject-independent-held-out",
+  "device": "GPU.0",
+  "device_name": "Intel(R) UHD Graphics (iGPU)",
+  "openvino_version": "2026.4.1-22982-e213a147257-releases/2026/4",
+  "samples": 12270,
+  "batch_size": 128,
+  "metrics": {
+    "accuracy": 0.969519152404238,
+    "macro_f1": 0.9695190544135803,
+    "confusion_matrix_rows_true_cols_pred_awake_sleepy": [
+      [
+        5959,
+        127
+      ],
+      [
+        247,
+        5937
+      ]
+    ],
+    "per_class": {
+      "awake": {
+        "precision": 0.9601998066387367,
+        "recall": 0.9791324350969438,
+        "f1": 0.9695737064757565,
+        "support": 6086
+      },
+      "sleepy": {
+        "precision": 0.9790567282321899,
+        "recall": 0.9600582147477361,
+        "f1": 0.9694644023514043,
+        "support": 6184
+      }
+    }
+  },
+  "batched_evaluation_seconds_including_inference_only_loop": 3.205886300000202,
+  "batch_inference_ms_median": 3.18894999963959,
+  "batch_inference_ms_p95": 3.6805750000894477,
+  "batch_one_inference_ms_median": 0.8178499997484323,
+  "batch_one_inference_ms_p95": 1.1891150006249516,
+  "batch_one_inference_fps_median_latency": 1222.7181027176089,
+  "caveat": "Subject-independent held-out images; this is still eye-state classification, not full driver-drowsiness detection."
+}

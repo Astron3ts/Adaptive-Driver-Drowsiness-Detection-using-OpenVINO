@@ -1,183 +1,290 @@
-import os
+import argparse
+import logging
 import time
+from datetime import datetime
+from pathlib import Path
 import numpy as np
+from PIL import Image
 import torch
 import torch.nn as nn
-import torch.optim as optim
-from torch.utils.data import TensorDataset, DataLoader
-import openvino as ov
+from torch.utils.data import DataLoader, TensorDataset
+
+try:
+    import openvino as ov
+except ImportError:
+    ov = None
+
+IMG_H, IMG_W = 26, 34
+LABEL_MAP = {"awake": 0, "sleepy": 1}
+
+
+def setup_logger(log_path):
+    logger = logging.getLogger("ocunet")
+    logger.setLevel(logging.INFO)
+    fmt = logging.Formatter("%(message)s")
+
+    fh = logging.FileHandler(log_path, encoding="utf-8")
+    fh.setFormatter(fmt)
+    logger.addHandler(fh)
+
+    sh = logging.StreamHandler()
+    sh.setFormatter(fmt)
+    logger.addHandler(sh)
+
+    return logger
+
+
+def build_cache(data_dir, split, logger=None):
+    log = logger.info if logger else print
+    root = Path(data_dir) / split
+    cache_x = Path(data_dir) / f"cache_{split}_x.npy"
+    cache_y = Path(data_dir) / f"cache_{split}_y.npy"
+
+    if cache_x.exists() and cache_y.exists():
+        log(f"  [{split}] Loading from cache ...")
+        images = np.load(cache_x)
+        labels = np.load(cache_y)
+        return images, labels
+
+    log(f"  [{split}] Building cache from PNGs (one-time) ...")
+    images, labels = [], []
+    for cls_name, label in LABEL_MAP.items():
+        cls_dir = root / cls_name
+        if not cls_dir.exists():
+            raise FileNotFoundError(f"Missing: {cls_dir}")
+        paths = sorted(cls_dir.glob("*.png"))
+        for p in paths:
+            img = Image.open(p).convert("L").resize((IMG_W, IMG_H), Image.BILINEAR)
+            images.append(np.array(img, dtype=np.float32) / 255.0)
+            labels.append(label)
+
+    images = np.stack(images)[:, None, :, :]   # (N, 1, H, W)
+    labels = np.array(labels, dtype=np.int64)
+    np.save(cache_x, images)
+    np.save(cache_y, labels)
+    log(f"  [{split}] Cached {len(images):,} samples -> {cache_x.name}, {cache_y.name}")
+    return images, labels
+
+
+def make_loader(images, labels, batch_size, shuffle, workers):
+    x = torch.from_numpy(images)
+    y = torch.from_numpy(labels)
+    ds = TensorDataset(x, y)
+    return DataLoader(ds, batch_size=batch_size, shuffle=shuffle,
+                      num_workers=workers, pin_memory=True)
+
 
 class OcuNet(nn.Module):
     def __init__(self):
         super().__init__()
         self.features = nn.Sequential(
-            # Block 1: 26x34 -> 13x17
             nn.Conv2d(1, 16, kernel_size=3, padding=1),
             nn.BatchNorm2d(16),
             nn.ReLU(inplace=True),
-            nn.MaxPool2d(kernel_size=2, stride=2),
-
-            # Block 2: 13x17 -> 6x8
+            nn.MaxPool2d(2),
             nn.Conv2d(16, 32, kernel_size=3, padding=1),
             nn.BatchNorm2d(32),
             nn.ReLU(inplace=True),
-            nn.MaxPool2d(kernel_size=2, stride=2),
-
-            # Block 3: 6x8 -> 3x4
+            nn.MaxPool2d(2),
             nn.Conv2d(32, 64, kernel_size=3, padding=1),
             nn.BatchNorm2d(64),
             nn.ReLU(inplace=True),
-            nn.MaxPool2d(kernel_size=2, stride=2)
+            nn.MaxPool2d(2),
         )
         self.classifier = nn.Sequential(
-            nn.AdaptiveAvgPool2d((1, 1)),
+            nn.AdaptiveAvgPool2d(1),
             nn.Flatten(),
             nn.Linear(64, 32),
             nn.ReLU(inplace=True),
             nn.Dropout(0.25),
-            nn.Linear(32, 2)  # [logit_closed, logit_open]
+            nn.Linear(32, 2),
         )
 
     def forward(self, x):
         return self.classifier(self.features(x))
 
-def load_data(data_dir="dataset"):
-    print("[1/5] Loading and preparing eye dataset...")
-    x_train = np.load(os.path.join(data_dir, "x_train.npy"))
-    y_train = np.load(os.path.join(data_dir, "y_train.npy")).squeeze().astype(np.int64)
-    x_val   = np.load(os.path.join(data_dir, "x_val.npy"))
-    y_val   = np.load(os.path.join(data_dir, "y_val.npy")).squeeze().astype(np.int64)
 
-    # Convert shape: (N, H, W, C) -> (N, C, H, W) and normalize [0, 1]
-    x_train = np.transpose(x_train, (0, 3, 1, 2)).astype(np.float32) / 255.0
-    x_val   = np.transpose(x_val,   (0, 3, 1, 2)).astype(np.float32) / 255.0
+def evaluate(model, loader, device):
+    model.eval()
+    correct, total = 0, 0
+    with torch.no_grad():
+        for x, y in loader:
+            x, y = x.to(device), y.to(device)
+            preds = model(x).argmax(dim=1)
+            correct += int((preds == y).sum())
+            total += y.size(0)
+    return (correct / total) * 100.0 if total > 0 else 0.0
 
-    train_ds = TensorDataset(torch.from_numpy(x_train), torch.from_numpy(y_train))
-    val_ds   = TensorDataset(torch.from_numpy(x_val),   torch.from_numpy(y_val))
 
-    train_loader = DataLoader(train_ds, batch_size=64, shuffle=True)
-    val_loader   = DataLoader(val_ds,   batch_size=64, shuffle=False)
+def train_model(model, train_loader, val_loader, device, epochs=25, save_path="ocunet_best.pt", logger=None):
+    log = logger.info if logger else print
 
-    print(f"      Train Samples: {len(train_ds)} | Val Samples: {len(val_ds)}")
-    return train_loader, val_loader
-
-def train_model(train_loader, val_loader, epochs=25):
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"[2/5] Training OcuNet on target hardware: {device.type.upper()}")
-    if device.type == "cuda":
-        print(f"      GPU: {torch.cuda.get_device_name(0)}")
-
-    model = OcuNet().to(device)
     criterion = nn.CrossEntropyLoss()
-    optimizer = optim.AdamW(model.parameters(), lr=1e-3, weight_decay=1e-4)
-    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3, weight_decay=1e-4)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
 
-    best_val_acc = 0.0
-    best_weights_path = "ocunet_best.pt"
+    best_acc = 0.0
+    best_epoch = 0
+    epoch_log = []
+    start_time = time.time()
 
-    t_start = time.time()
+    log("-" * 65)
+    log(f"{'Epoch':>6}  {'Loss':>8}  {'Train Acc':>10}  {'Val Acc':>9}  {'LR':>10}")
+    log("-" * 65)
+
     for epoch in range(1, epochs + 1):
         model.train()
         running_loss, correct, total = 0.0, 0, 0
-        for images, labels in train_loader:
-            images, labels = images.to(device), labels.to(device)
-
+        for x, y in train_loader:
+            x, y = x.to(device), y.to(device)
             optimizer.zero_grad()
-            outputs = model(images)
-            loss = criterion(outputs, labels)
+            logits = model(x)
+            loss = criterion(logits, y)
             loss.backward()
             optimizer.step()
 
-            running_loss += loss.item() * images.size(0)
-            _, predicted = outputs.max(1)
-            total += labels.size(0)
-            correct += predicted.eq(labels).sum().item()
+            running_loss += loss.item() * y.size(0)
+            correct += int((logits.argmax(1) == y).sum())
+            total += y.size(0)
 
         scheduler.step()
-        train_acc = 100.0 * correct / total
-        train_loss = running_loss / total
+        current_lr = scheduler.get_last_lr()[0]
+        train_acc = 100 * correct / total
+        val_acc = evaluate(model, val_loader, device)
+        avg_loss = running_loss / total
 
-        # Validation
-        model.eval()
-        val_loss, val_correct, val_total = 0.0, 0, 0
-        with torch.no_grad():
-            for images, labels in val_loader:
-                images, labels = images.to(device), labels.to(device)
-                outputs = model(images)
-                loss = criterion(outputs, labels)
-                val_loss += loss.item() * images.size(0)
-                _, predicted = outputs.max(1)
-                val_total += labels.size(0)
-                val_correct += predicted.eq(labels).sum().item()
+        epoch_log.append({
+            "epoch": epoch,
+            "loss": avg_loss,
+            "train_acc": train_acc,
+            "val_acc": val_acc,
+            "lr": current_lr,
+        })
 
-        val_acc = 100.0 * val_correct / val_total
-        val_loss = val_loss / val_total
+        if val_acc > best_acc:
+            best_acc = val_acc
+            best_epoch = epoch
+            torch.save(model.state_dict(), save_path)
 
-        if val_acc > best_val_acc:
-            best_val_acc = val_acc
-            torch.save(model.state_dict(), best_weights_path)
+        if epoch % 5 == 0 or epoch == epochs:
+            log(f"{epoch:>6}  {avg_loss:>8.4f}  {train_acc:>9.2f}%  {val_acc:>8.2f}%  {current_lr:>10.6f}")
 
-        if epoch % 5 == 0 or epoch == epochs or epoch == 1:
-            print(f"      Epoch {epoch:2d}/{epochs:2d} | Train Loss: {train_loss:.4f} Acc: {train_acc:5.1f}% | Val Loss: {val_loss:.4f} Acc: {val_acc:5.1f}%")
+    elapsed = time.time() - start_time
+    log("-" * 65)
+    log(f"Training complete in {elapsed:.1f}s  |  Best Val Acc: {best_acc:.2f}%  (epoch {best_epoch})")
+    log("-" * 65)
 
-    print(f"[3/5] Training Complete in {time.time() - t_start:.1f}s! Peak Val Accuracy: {best_val_acc:.2f}%")
-    print(f"      Saved PyTorch weights: {best_weights_path}")
+    model.load_state_dict(torch.load(save_path, weights_only=True))
+    return model, best_acc, best_epoch, elapsed, epoch_log
 
-    # Load best weights
-    model.load_state_dict(torch.load(best_weights_path, weights_only=True))
-    model.eval()
-    return model
 
-def convert_to_openvino(torch_model, output_name="ocunet"):
-    print("[4/5] Converting PyTorch model -> Native OpenVINO IR (.xml + .bin)...")
-    torch_model.eval().to("cpu")
-    dummy_input = torch.randn(1, 1, 26, 34, dtype=torch.float32)
+def export_to_openvino(model, output_prefix="ocunet", logger=None):
+    log = logger.info if logger else print
 
-    ov_model = ov.convert_model(torch_model, example_input=dummy_input)
-    xml_path = f"{output_name}.xml"
-    bin_path = f"{output_name}.bin"
+    if ov is None:
+        log("[Warning] OpenVINO is not installed; skipping IR export.")
+        return None, None
+
+    model.eval().to("cpu")
+    dummy_input = torch.zeros(1, 1, IMG_H, IMG_W, dtype=torch.float32)
+    ov_model = ov.convert_model(model, example_input=dummy_input)
+
+    xml_path = f"{output_prefix}.xml"
+    bin_path = f"{output_prefix}.bin"
     ov.save_model(ov_model, xml_path)
-    print(f"      Exported OpenVINO Model: {xml_path} and {bin_path}")
+
+    xml_size = Path(xml_path).stat().st_size / 1024
+    bin_size = Path(bin_path).stat().st_size / 1024
+    log(f"[OpenVINO] Exported IR -> {xml_path} ({xml_size:.1f} KB)  |  {bin_path} ({bin_size:.1f} KB)")
     return xml_path, bin_path
 
-def benchmark_openvino(xml_path):
-    print("[5/5] Benchmarking OpenVINO compiled inference...")
-    core = ov.Core()
-    devices = core.available_devices
-    print(f"      Detected OpenVINO Devices: {devices}")
 
-    dummy_tensor = np.random.randn(1, 1, 26, 34).astype(np.float32)
+def main():
+    parser = argparse.ArgumentParser(description="Train OcuNet Eye Classifier and Export to OpenVINO IR")
+    parser.add_argument("--data-dir", type=str, default="dataset/archive/data", help="Root folder with train/val subfolders (awake/sleepy)")
+    parser.add_argument("--epochs", type=int, default=25, help="Number of training epochs")
+    parser.add_argument("--batch-size", type=int, default=128, help="Batch size")
+    parser.add_argument("--device", type=str, default="auto", choices=["auto", "cpu", "cuda"], help="Training device")
+    parser.add_argument("--output", type=str, default="ocunet", help="Prefix for exported OpenVINO model")
+    parser.add_argument("--workers", type=int, default=0, help="DataLoader worker threads (0 = main thread)")
+    args = parser.parse_args()
 
-    print("-" * 65)
-    print(f"{'Target Device':<20} | {'Mean Latency':<18} | {'Throughput (FPS)':<15}")
-    print("-" * 65)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_path = Path(f"ocunet_training_{timestamp}.txt")
+    logger = setup_logger(log_path)
 
-    for dev in devices:
-        try:
-            compiled = core.compile_model(xml_path, dev)
-            out_layer = compiled.output(0)
+    if args.device == "cuda" or (args.device == "auto" and torch.cuda.is_available()):
+        device = torch.device("cuda")
+        device_name = torch.cuda.get_device_name(0)
+    else:
+        device = torch.device("cpu")
+        device_name = "CPU"
 
-            # Warmup
-            for _ in range(50):
-                _ = compiled([dummy_tensor])[out_layer]
+    logger.info("=" * 65)
+    logger.info("  OcuNet Training Log")
+    logger.info(f"  Started     : {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    logger.info("=" * 65)
+    logger.info(f"  Device      : {device_name} ({device})")
+    logger.info(f"  Data Dir    : {args.data_dir}")
+    logger.info(f"  Epochs      : {args.epochs}")
+    logger.info(f"  Batch Size  : {args.batch_size}")
+    logger.info(f"  Output      : {args.output}")
+    logger.info(f"  Log File    : {log_path}")
+    logger.info("=" * 65)
 
-            # Measure
-            iters = 500
-            t0 = time.perf_counter()
-            for _ in range(iters):
-                _ = compiled([dummy_tensor])[out_layer]
-            total_sec = time.perf_counter() - t0
+    logger.info("")
+    logger.info("  Dataset Preparation")
+    logger.info("-" * 65)
+    try:
+        train_x, train_y = build_cache(args.data_dir, "train", logger)
+        val_x, val_y = build_cache(args.data_dir, "val", logger)
+    except Exception as e:
+        logger.info(f"[Error] Dataset loading failed: {e}")
+        return
 
-            mean_ms = (total_sec / iters) * 1000.0
-            fps = iters / total_sec
-            print(f"{dev:<20} | {mean_ms:6.3f} ms           | {fps:8.1f} FPS")
-        except Exception as e:
-            print(f"{dev:<20} | Skipped ({e})")
-    print("-" * 65)
+    logger.info(f"  Train samples : {len(train_x):,}")
+    logger.info(f"  Val samples   : {len(val_x):,}")
+    logger.info(f"  Image size    : {IMG_H}x{IMG_W} (grayscale)")
+    logger.info("")
+
+    train_loader = make_loader(train_x, train_y, args.batch_size, shuffle=True, workers=args.workers)
+    val_loader = make_loader(val_x, val_y, args.batch_size, shuffle=False, workers=args.workers)
+
+    model = OcuNet().to(device)
+    total_params = sum(p.numel() for p in model.parameters())
+    logger.info(f"  Model parameters : {total_params:,}")
+    logger.info("")
+
+    model, best_acc, best_epoch, elapsed, epoch_log = train_model(
+        model, train_loader, val_loader, device,
+        epochs=args.epochs,
+        save_path=f"{args.output}_best.pt",
+        logger=logger,
+    )
+
+    logger.info("")
+    logger.info("  Per-Epoch Summary")
+    logger.info("-" * 65)
+    for e in epoch_log:
+        logger.info(
+            f"  Epoch {e['epoch']:02d} | Loss {e['loss']:.4f} | "
+            f"Train {e['train_acc']:.2f}% | Val {e['val_acc']:.2f}% | LR {e['lr']:.6f}"
+        )
+
+    logger.info("")
+    logger.info("  Export")
+    logger.info("-" * 65)
+    export_to_openvino(model, output_prefix=args.output, logger=logger)
+
+    logger.info("")
+    logger.info("=" * 65)
+    logger.info(f"  Best Epoch      : {best_epoch}")
+    logger.info(f"  Best Val Acc    : {best_acc:.2f}%")
+    logger.info(f"  Training Time   : {elapsed:.1f}s")
+    logger.info(f"  Finished        : {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    logger.info("=" * 65)
+    logger.info(f"\nLog saved to: {log_path.resolve()}")
+
 
 if __name__ == "__main__":
-    train_loader, val_loader = load_data()
-    model = train_model(train_loader, val_loader, epochs=25)
-    xml_path, _ = convert_to_openvino(model)
-    benchmark_openvino(xml_path)
-    print("[Done] Custom eye model trained on CUDA and ready for OpenVINO deployment!")
+    main()

@@ -1,0 +1,105 @@
+{
+  "model": "TwoLayerCNN",
+  "dataset": "MRL eye images from the project dataset folder",
+  "seed": 42,
+  "device": "cpu",
+  "subject_split": {
+    "train": [
+      "s0002",
+      "s0005",
+      "s0008",
+      "s0009",
+      "s0011",
+      "s0013",
+      "s0014",
+      "s0015",
+      "s0016",
+      "s0017",
+      "s0018",
+      "s0019",
+      "s0020",
+      "s0021",
+      "s0022",
+      "s0023",
+      "s0024",
+      "s0026",
+      "s0027",
+      "s0028",
+      "s0030",
+      "s0031",
+      "s0032",
+      "s0034",
+      "s0035",
+      "s0037"
+    ],
+    "val": [
+      "s0001",
+      "s0003",
+      "s0006",
+      "s0007",
+      "s0025",
+      "s0036"
+    ],
+    "test": [
+      "s0004",
+      "s0010",
+      "s0012",
+      "s0029",
+      "s0033"
+    ]
+  },
+  "split_counts": {
+    "train": {
+      "subjects": 26,
+      "images": 59376,
+      "awake": 29871,
+      "sleepy": 29505
+    },
+    "val": {
+      "subjects": 6,
+      "images": 13252,
+      "awake": 6995,
+      "sleepy": 6257
+    },
+    "test": {
+      "subjects": 5,
+      "images": 12270,
+      "awake": 6086,
+      "sleepy": 6184
+    }
+  },
+  "best_validation_accuracy": 0.9477814669483852,
+  "test_metrics": {
+    "accuracy": 0.8836185819070904,
+    "macro_f1": 0.8827829380655838,
+    "confusion_matrix_rows_true_cols_pred_awake_sleepy": [
+      [
+        5939,
+        147
+      ],
+      [
+        1281,
+        4903
+      ]
+    ],
+    "per_class": {
+      "awake": {
+        "precision": 0.8225761772853185,
+        "recall": 0.9758462044035491,
+        "f1": 0.8926799939876747,
+        "support": 6086
+      },
+      "sleepy": {
+        "precision": 0.9708910891089109,
+        "recall": 0.7928525226390686,
+        "f1": 0.8728858821434929,
+        "support": 6184
+      }
+    }
+  },
+  "epochs": 25,
+  "training_seconds": 242.34682580000026,
+  "checkpoint": "twolayercnn_subject_independent_best.pt",
+  "caveat": "Subject-independent eye-state classification; not an end-to-end driver drowsiness evaluation.",
+  "parameter_count": 5458
+}

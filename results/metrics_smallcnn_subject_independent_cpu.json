@@ -1,0 +1,44 @@
+{
+  "model": "smallcnn_subject_independent.xml",
+  "split": "subject-independent-held-out",
+  "device": "CPU",
+  "device_name": "13th Gen Intel(R) Core(TM) i5-13420H",
+  "openvino_version": "2026.4.1-22982-e213a147257-releases/2026/4",
+  "samples": 12270,
+  "batch_size": 128,
+  "metrics": {
+    "accuracy": 0.7793806030969845,
+    "macro_f1": 0.7767855099761685,
+    "confusion_matrix_rows_true_cols_pred_awake_sleepy": [
+      [
+        5443,
+        643
+      ],
+      [
+        2064,
+        4120
+      ]
+    ],
+    "per_class": {
+      "awake": {
+        "precision": 0.7250566138270947,
+        "recall": 0.8943476832073611,
+        "f1": 0.8008533804163908,
+        "support": 6086
+      },
+      "sleepy": {
+        "precision": 0.8650010497585555,
+        "recall": 0.666235446313066,
+        "f1": 0.7527176395359461,
+        "support": 6184
+      }
+    }
+  },
+  "batched_evaluation_seconds_including_inference_only_loop": 0.07342619999963063,
+  "batch_inference_ms_median": 0.631249999969441,
+  "batch_inference_ms_p95": 1.0290249995250633,
+  "batch_one_inference_ms_median": 0.0638999999864609,
+  "batch_one_inference_ms_p95": 0.08952999942266612,
+  "batch_one_inference_fps_median_latency": 15649.452272486378,
+  "caveat": "Subject-independent held-out images; this is still eye-state classification, not full driver-drowsiness detection."
+}
