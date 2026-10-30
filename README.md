@@ -55,6 +55,3 @@ For Intel GPU evaluation, use `--device GPU.0` if that is the Intel iGPU name re
 - FPGA work is a plan, not a completed hardware implementation.
 - The paper, system diagrams, and result figures still need revision. Do not submit the draft PDF as final.
 
-## Code and authorship
-
-The package removes duplicate entry points and stale result files while keeping the implementation and useful explanatory comments. Review and adapt the code as a team, and describe authorship accurately in the submission.
